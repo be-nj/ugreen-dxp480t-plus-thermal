@@ -85,7 +85,7 @@ less sbin/cpu-thermal-limits.sh default/cpu-thermal-limits systemd/*
 
 ```sh
 sudo install -o root -g root -m 755 sbin/cpu-thermal-limits.sh /usr/local/sbin/
-sudo install -o root -g root -m 644 default/cpu-thermal-limits /etc/default/   # overwrites an edited config
+sudo install -o root -g root -m 644 default/cpu-thermal-limits /etc/default/
 sudo install -o root -g root -m 644 systemd/cpu-thermal-limits.service systemd/cpu-thermal-limits.timer \
         systemd/cpu-thermal-limits-reapply.service /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -98,7 +98,7 @@ sudo systemctl enable --now cpu-thermal-limits.service cpu-thermal-limits.timer
 sudo /usr/local/sbin/cpu-thermal-limits.sh status
 ```
 
-Install while the firmware defaults are still active. The first run saves them, and `reset` restores them.
+On every boot the service first saves the current firmware values to `/run/cpu-thermal-limits`, then applies the limits. `reset` restores the saved values.
 
 ## Configure
 
@@ -109,9 +109,28 @@ POWER_LIMIT_W=15     # 5-65, empty = leave unchanged
 MAX_FREQ_MHZ=3000    # 800-6000, empty = leave unchanged
 ```
 
-Then run `sudo systemctl restart cpu-thermal-limits.service`.
+Then check and apply it:
 
-For safety the file is parsed, never executed. It must be owned by root and not writable by anyone else. Invalid values stop the script, and no limit is changed. The systemd units also restrict the script: no network, no capabilities, and a read-only system except the power limit and cpufreq settings in `/sys` and its own state directory.
+```sh
+sudo /usr/local/sbin/cpu-thermal-limits.sh check
+sudo systemctl reload cpu-thermal-limits.service
+```
+
+Use `reload`, not `restart`. A reload with an invalid config fails and keeps the current limits. A restart resets to the firmware values first.
+
+For safety the file is parsed, never executed. It must be owned by root and not writable by anyone else. The systemd units also restrict the script: no network, no capabilities, and a read-only system except the power limit and cpufreq settings in `/sys`.
+
+## Update
+
+Read the changes first (`git pull`, then `git log -p`). Then install the script and units again, without the config line, so your settings are kept:
+
+```sh
+sudo install -o root -g root -m 755 sbin/cpu-thermal-limits.sh /usr/local/sbin/
+sudo install -o root -g root -m 644 systemd/cpu-thermal-limits.service systemd/cpu-thermal-limits.timer \
+        systemd/cpu-thermal-limits-reapply.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl restart cpu-thermal-limits.service cpu-thermal-limits.timer
+```
 
 ## Undo
 
@@ -120,11 +139,11 @@ sudo systemctl disable --now cpu-thermal-limits.timer cpu-thermal-limits.service
 sudo rm /usr/local/sbin/cpu-thermal-limits.sh /etc/default/cpu-thermal-limits \
         /etc/systemd/system/cpu-thermal-limits.service /etc/systemd/system/cpu-thermal-limits.timer \
         /etc/systemd/system/cpu-thermal-limits-reapply.service
-sudo rm -rf /var/lib/cpu-thermal-limits /run/cpu-thermal-limits
+sudo rm -rf /run/cpu-thermal-limits
 sudo systemctl daemon-reload
 ```
 
-Stopping the service restores the firmware defaults right away. Nothing is written to firmware, so a reboot without the service restores them as well.
+Stopping the service restores the firmware values right away. During shutdown the limits are kept on purpose, so running VMs can shut down without overheating. Nothing is written to firmware: a boot without the service always starts with the firmware values.
 
 ## Test on your own unit
 

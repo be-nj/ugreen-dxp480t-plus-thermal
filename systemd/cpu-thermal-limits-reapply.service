@@ -1,8 +1,7 @@
 [Unit]
 Description=Re-apply CPU power and frequency limits
-# Only re-apply while the main service is active. After
-# "systemctl stop cpu-thermal-limits.service" the timer must not bring the limits back.
-Requisite=cpu-thermal-limits.service
+# The script itself skips re-applying unless cpu-thermal-limits.service is active
+# (checked under a lock), so "systemctl stop" is never undone by the timer.
 After=cpu-thermal-limits.service
 
 [Service]
@@ -10,8 +9,7 @@ Type=oneshot
 ExecStart=/usr/local/sbin/cpu-thermal-limits.sh reapply
 
 # Sandboxing: /sys and /proc/sys are read-only except the power limit and cpufreq
-# directories; writable state only in /var/lib and /run/cpu-thermal-limits.
-StateDirectory=cpu-thermal-limits
+# directories; writable state only in /run/cpu-thermal-limits.
 RuntimeDirectory=cpu-thermal-limits
 RuntimeDirectoryPreserve=yes
 ProtectSystem=strict

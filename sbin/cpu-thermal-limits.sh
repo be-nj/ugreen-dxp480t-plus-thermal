@@ -11,16 +11,20 @@
 #   MAX_FREQ_MHZ=3000    max frequency per core in MHz, empty = leave untouched
 #
 # Usage:
-#   cpu-thermal-limits.sh apply     apply configured limits (default)
-#   cpu-thermal-limits.sh reapply   apply only while cpu-thermal-limits.service is active (used by the timer)
-#   cpu-thermal-limits.sh reset     restore the values saved before the first apply
-#   cpu-thermal-limits.sh status    show current limits
+#   cpu-thermal-limits.sh apply       apply configured limits (default)
+#   cpu-thermal-limits.sh reapply     apply only while cpu-thermal-limits.service is active (used by the timer)
+#   cpu-thermal-limits.sh reset       restore the values saved before the first apply in this boot
+#   cpu-thermal-limits.sh check       validate the config without changing anything
+#   cpu-thermal-limits.sh wait-rapl   wait up to 60 s for the RAPL interface (used by ExecStartPre)
+#   cpu-thermal-limits.sh status      show current limits
 
 set -eu
 
 CONFIG=/etc/default/cpu-thermal-limits
-STATE_DIR=/var/lib/cpu-thermal-limits
+# Original values are kept in /run, so every boot records the firmware values
+# afresh (a BIOS update may change them).
 RUN_DIR=/run/cpu-thermal-limits
+STATE_DIR=$RUN_DIR/saved
 MAIN_UNIT=cpu-thermal-limits.service
 RAPL_MSR=/sys/class/powercap/intel-rapl:0
 RAPL_MMIO=/sys/class/powercap/intel-rapl-mmio:0
@@ -106,7 +110,7 @@ save_once() {
         return 0
     fi
     v=$(read_uint "$2") || { warn "cannot read $2"; return 1; }
-    mkdir -p "$STATE_DIR" || return 1
+    { mkdir -p "$STATE_DIR" && chmod 0700 "$STATE_DIR"; } || return 1
     printf '%s\n' "$v" > "$dst.tmp" && mv -f "$dst.tmp" "$dst" || { warn "cannot write $dst"; return 1; }
 }
 
@@ -115,7 +119,7 @@ restore() {
     local src="$STATE_DIR/$1" v
     [ -f "$src" ] || return 2
     v=$(read_uint "$src") || { warn "saved value $src is invalid"; return 1; }
-    echo "$v" 2>/dev/null > "$2" || true
+    write_value "$v" "$2"
     [ "$(cat "$2" 2>/dev/null)" = "$v" ] || { warn "could not restore $2"; return 1; }
 }
 
@@ -125,9 +129,24 @@ rapl_domains() {
     return 0
 }
 
+# cpufreq directories of online CPUs. An offline CPU keeps its cpufreq link, but
+# reads and writes fail with EBUSY, so it is skipped.
 cpufreq_dirs() {
-    local c
-    for c in /sys/devices/system/cpu/cpu[0-9]*/cpufreq; do [ -f "$c/scaling_max_freq" ] && echo "$c"; done
+    local c online
+    for c in /sys/devices/system/cpu/cpu[0-9]*/cpufreq; do
+        [ -f "$c/scaling_max_freq" ] || continue
+        online="$(dirname "$c")/online"
+        if [ -f "$online" ] && [ "$(cat "$online" 2>/dev/null)" = 0 ]; then continue; fi
+        echo "$c"
+    done
+    return 0
+}
+
+# write_value VALUE FILE: write and report the kernel's error message (e.g. a
+# read-only mount) instead of discarding it; the caller verifies by reading back.
+write_value() {
+    local err
+    err=$( { printf '%s\n' "$1" > "$2"; } 2>&1 ) || warn "writing $2: ${err##*: }"
     return 0
 }
 
@@ -138,6 +157,8 @@ cpufreq_dirs() {
 wait_for_rapl() {
     # RAPL drivers are loaded by udev. The MSR interface is required and may take
     # a while at boot; the MMIO interface is optional and gets a short grace period.
+    # Under systemd this runs in ExecStartPre: the sandbox of ExecStart is built
+    # afterwards, so directories that appear during the wait are writable there.
     for _ in $(seq 60); do
         [ -d "$RAPL_MSR" ] && break
         sleep 1
@@ -153,14 +174,14 @@ wait_for_rapl() {
 apply_power_limit() {
     [ -n "$POWER_LIMIT_W" ] || return 0
     local uw=$(( POWER_LIMIT_W * 1000000 )) d c ok=0
-    wait_for_rapl || { warn "RAPL interface $RAPL_MSR not available"; return 1; }
+    [ -d "$RAPL_MSR" ] || wait_for_rapl || { warn "RAPL interface $RAPL_MSR not available"; return 1; }
     for d in $(rapl_domains); do
         for c in 0 1; do
             save_once "$(basename "$d")-c$c" "$d/constraint_${c}_power_limit_uw" \
                 || { warn "not changing $d: original value could not be saved"; continue 2; }
         done
-        echo "$uw" 2>/dev/null > "$d/constraint_0_power_limit_uw" || true
-        echo "$uw" 2>/dev/null > "$d/constraint_1_power_limit_uw" || true
+        write_value "$uw" "$d/constraint_0_power_limit_uw"
+        write_value "$uw" "$d/constraint_1_power_limit_uw"
         if [ "$(cat "$d/constraint_0_power_limit_uw")" = "$uw" ] && [ "$(cat "$d/constraint_1_power_limit_uw")" = "$uw" ]; then
             ok=1
         else
@@ -180,7 +201,7 @@ apply_max_freq() {
         hw=$(read_uint "$c/cpuinfo_max_freq") || { bad=1; continue; }
         v=$khz
         if [ "$v" -gt "$hw" ]; then v=$hw; fi
-        echo "$v" 2>/dev/null > "$c/scaling_max_freq" || true
+        write_value "$v" "$c/scaling_max_freq"
         [ "$(cat "$c/scaling_max_freq" 2>/dev/null)" = "$v" ] || { warn "$c did not accept $v kHz"; bad=1; }
     done
     [ "$found" = 1 ] || { warn "no cpufreq interface found"; return 1; }
@@ -231,13 +252,17 @@ show_status() {
 take_lock() {
     mkdir -p "$RUN_DIR" || die "cannot create $RUN_DIR"
     exec 9>"$RUN_DIR/lock" || die "cannot open $RUN_DIR/lock"
-    flock -w 120 9 || die "timed out waiting for $RUN_DIR/lock"
+    flock -w 60 9 || die "timed out waiting for $RUN_DIR/lock"
 }
 
-do_apply() {
+load_config() {
     read_config
     check_int POWER_LIMIT_W "$POWER_LIMIT_W" "$POWER_MIN_W" "$POWER_MAX_W"
     check_int MAX_FREQ_MHZ "$MAX_FREQ_MHZ" "$FREQ_MIN_MHZ" "$FREQ_MAX_MHZ"
+}
+
+do_apply() {
+    load_config
     # Try both limits even if one fails, then report failure.
     local rc=0
     apply_power_limit || rc=1
@@ -263,9 +288,22 @@ case "${1:-apply}" in
         do_apply
         ;;
     reset)
+        # During shutdown or reboot keep the limits: the guests are still shutting
+        # down, and the next boot starts from the firmware values anyway.
+        if [ "$(systemctl is-system-running 2>/dev/null)" = stopping ]; then
+            log "system is shutting down, keeping limits"
+            exit 0
+        fi
         take_lock
         reset_limits
         ;;
+    check)
+        load_config
+        log "config OK: POWER_LIMIT_W=${POWER_LIMIT_W:-unchanged} MAX_FREQ_MHZ=${MAX_FREQ_MHZ:-unchanged}"
+        ;;
+    wait-rapl)
+        wait_for_rapl || die "RAPL interface $RAPL_MSR not available"
+        ;;
     status) show_status ;;
-    *)      echo "usage: $0 [apply|reapply|reset|status]" >&2; exit 2 ;;
+    *)      echo "usage: $0 [apply|reapply|reset|check|wait-rapl|status]" >&2; exit 2 ;;
 esac

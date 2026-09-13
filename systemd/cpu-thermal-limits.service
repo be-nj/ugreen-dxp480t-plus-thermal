@@ -1,18 +1,29 @@
 [Unit]
 Description=Apply CPU power and frequency limits (thermal fix)
 After=sysinit.target
+# Retry a failed start (e.g. a driver that appeared late), but not forever.
+StartLimitIntervalSec=15min
+StartLimitBurst=5
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# Wait for the RAPL driver in a separate step: the sandbox for ExecStart is set up
+# after it, so ReadWritePaths can include directories that appeared during the wait.
+ExecStartPre=/usr/local/sbin/cpu-thermal-limits.sh wait-rapl
 ExecStart=/usr/local/sbin/cpu-thermal-limits.sh apply
+# "systemctl reload" applies a changed config; if the config is invalid it fails
+# and the current limits stay in place (unlike restart, which resets first).
+ExecReload=/usr/local/sbin/cpu-thermal-limits.sh apply
 # ExecStopPost (not ExecStop) also runs when "apply" failed, so a partial apply is
 # rolled back and "systemctl stop" always restores the saved values.
 ExecStopPost=/usr/local/sbin/cpu-thermal-limits.sh reset
+Restart=on-failure
+RestartSec=30s
+TimeoutStopSec=90s
 
 # Sandboxing: /sys and /proc/sys are read-only except the power limit and cpufreq
-# directories; writable state only in /var/lib and /run/cpu-thermal-limits.
-StateDirectory=cpu-thermal-limits
+# directories; writable state only in /run/cpu-thermal-limits.
 RuntimeDirectory=cpu-thermal-limits
 RuntimeDirectoryPreserve=yes
 ProtectSystem=strict

@@ -1,5 +1,7 @@
 [Unit]
 Description=Re-apply CPU power and frequency limits periodically (firmware may reset them)
+# Stopped and restarted together with the main service.
+PartOf=cpu-thermal-limits.service
 
 [Timer]
 OnBootSec=5min
