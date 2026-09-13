@@ -6,19 +6,32 @@
 # 95-100 C spikes that a package power limit alone does not prevent.
 # Prints per-second temperatures and a summary (avg/max temp, watts, MHz, throttle time).
 #
-# Requires: stress-ng
+# Requires: root (RAPL energy counters are root-only), stress-ng
 # Usage: singlecore-test.sh [label] [cpu]
 set -u
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
 LABEL="${1:-single}"; CPU="${2:-0}"; SECS=20
-H=$(grep -l '^coretemp$' /sys/class/hwmon/hwmon*/name | head -1 | xargs dirname)
+[[ "$LABEL" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || die "label may only contain letters, digits, '.', '_' and '-'"
+[[ "$CPU" =~ ^(0|[1-9][0-9]{0,3})$ ]] || die "cpu must be a CPU number"
+[ "$(id -u)" = 0 ] || die "must run as root"
+command -v stress-ng >/dev/null || die "stress-ng not installed"
+
+H=$(grep -lx 'coretemp' /sys/class/hwmon/hwmon*/name 2>/dev/null | head -1 | xargs -r dirname)
 T=/sys/devices/system/cpu/cpu0/thermal_throttle/package_throttle_total_time_ms
 R=/sys/class/powercap/intel-rapl:0/energy_uj
 FREQ=/sys/devices/system/cpu/cpu$CPU/cpufreq/scaling_cur_freq
+[ -n "$H" ] || die "coretemp sensor not found"
+[ -r "$FREQ" ] || die "cpu$CPU not found"
+[ -r "$R" ] || die "$R not readable"
+[ -r "$T" ] || die "$T not readable"
 
 t0=$(cat $T); e0=$(cat $R); sum=0; max=0; fsum=0; temps=""; n=$((SECS - 1))
 stress-ng --cpu 1 --taskset "$CPU" --timeout "${SECS}s" --quiet &
 SPID=$!
-trap 'kill $SPID 2>/dev/null' EXIT INT TERM
+trap 'kill $SPID 2>/dev/null' EXIT
+trap 'exit 130' INT TERM
 for _ in $(seq $n); do
   sleep 1
   v=$(( $(cat "$H/temp1_input") / 1000 ))
@@ -27,6 +40,7 @@ for _ in $(seq $n); do
   temps="$temps $v"
 done
 e1=$(cat $R)
-wait
+wait $SPID 2>/dev/null
+watts="?"; [ "$e1" -ge "$e0" ] && watts=$(( (e1 - e0) / (n * 1000000) ))
 echo "$LABEL single-core: temps:$temps"
-echo "$LABEL single-core: avg $((sum / n))C max ${max}C avg $(( (e1 - e0) / (n * 1000000) ))W avg $((fsum / n))MHz throttled $(( $(cat $T) - t0 ))ms"
+echo "$LABEL single-core: avg $((sum / n))C max ${max}C avg ${watts}W avg $((fsum / n))MHz throttled $(( $(cat $T) - t0 ))ms"

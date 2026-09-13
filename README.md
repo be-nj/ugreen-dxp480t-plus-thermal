@@ -27,11 +27,13 @@ The fans are not changed. More fan speed does not help here: even at 100 % fan s
 
 Same unit, 20 s of load, BIOS fan control.
 
-| | Firmware default | 15 W + 3000 MHz |
+| | Before | 15 W + 3000 MHz |
 |---|---|---|
 | All cores: avg / max | 97.5 °C / 100 °C | **77 °C / 80 °C** |
-| One core: avg / max | 89 °C / 95 °C | **73 °C / 84 °C** |
+| One core: avg / max ¹ | 89 °C / 95 °C | **73 °C / 84 °C** |
 | Throttled during test | 11.5 s of 20 s | **0 s** |
+
+¹ "Before" measured at 4400 MHz with the 15 W limit already active. A single core draws only about 12 W, so the power limit does not affect this test.
 
 <details>
 <summary>All measurements</summary>
@@ -41,9 +43,9 @@ Same unit, 20 s of load, BIOS fan control.
 | Configuration | Avg | Max | Power | Throttled |
 |---|---|---|---|---|
 | Firmware default | 97.5 °C | 100 °C | 27.2 W | 11.5 s |
-| Default, fans at 100 % ¹ | 94.4 °C | 100 °C | 29.4 W | 6.1 s |
-| 20 W, fans ~3000 rpm ¹ | 80.0 °C | 87 °C | 20.2 W | 0.03 s |
-| 15 W, fans ~3000 rpm ¹ | 70.7 °C | 74 °C | 15.2 W | 0.04 s |
+| Default, fans at 100 % ² | 94.4 °C | 100 °C | 29.4 W | 6.1 s |
+| 20 W, fans ~3000 rpm ² | 80.0 °C | 87 °C | 20.2 W | 0.03 s |
+| 15 W, fans ~3000 rpm ² | 70.7 °C | 74 °C | 15.2 W | 0.04 s |
 | 15 W + 3000 MHz | 76.8 °C | 80 °C | 15.2 W | 0 s |
 
 **One P-core**, 15 W limit (`tests/singlecore-test.sh`)
@@ -55,7 +57,7 @@ Same unit, 20 s of load, BIOS fan control.
 | 3000 MHz | 70-73 °C | 76-84 °C | 6 W | 0 |
 | 2500 MHz | 63 °C | 70 °C | 4 W | 0 |
 
-¹ Fans set to a fixed speed with the temporary `it87` driver, see [Fans](#fans).
+² Fans set to a fixed speed with the temporary `it87` driver, see [Fans](#fans).
 
 </details>
 
@@ -63,7 +65,7 @@ Same unit, 20 s of load, BIOS fan control.
 
 - Intel CPU with RAPL (`/sys/class/powercap/intel-rapl:0` exists)
 - systemd, bash
-- Tests only: `stress-ng`, `bc`
+- Tests only: `stress-ng`
 
 **No extra driver or DKMS needed.** Everything uses standard kernel interfaces.
 
@@ -92,7 +94,7 @@ sudo systemctl enable --now cpu-thermal-limits.service cpu-thermal-limits.timer
 **3. Check**
 
 ```sh
-sudo cpu-thermal-limits.sh status
+sudo /usr/local/sbin/cpu-thermal-limits.sh status
 ```
 
 Install while the firmware defaults are still active. The first run saves them, and `reset` restores them.
@@ -108,7 +110,7 @@ MAX_FREQ_MHZ=3000    # 800-6000, empty = leave unchanged
 
 Then run `sudo systemctl restart cpu-thermal-limits.service`.
 
-For safety the file is parsed, never executed. It must be owned by root and not writable by anyone else. Invalid values stop the script, and no limit is changed.
+For safety the file is parsed, never executed. It must be owned by root and not writable by anyone else. Invalid values stop the script, and no limit is changed. The systemd units also run the script in a sandbox: no network, read-only system, no capabilities.
 
 ## Undo
 
