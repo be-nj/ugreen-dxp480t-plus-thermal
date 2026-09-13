@@ -9,6 +9,7 @@
 # Requires: root (RAPL energy counters are root-only), stress-ng
 # Usage: singlecore-test.sh [label] [cpu]
 set -u
+export LC_ALL=C   # EPOCHREALTIME and awk must use "." as decimal separator
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -27,11 +28,13 @@ FREQ=/sys/devices/system/cpu/cpu$CPU/cpufreq/scaling_cur_freq
 [ -r "$R" ] || die "$R not readable"
 [ -r "$T" ] || die "$T not readable"
 
-t0=$(cat $T); e0=$(cat $R); sum=0; max=0; fsum=0; temps=""; n=$((SECS - 1))
+t0=$(cat $T); e0=$(cat $R); ts0=$EPOCHREALTIME; sum=0; max=0; fsum=0; temps=""; n=$((SECS - 1))
 stress-ng --cpu 1 --taskset "$CPU" --timeout "${SECS}s" --quiet &
 SPID=$!
-trap 'kill $SPID 2>/dev/null' EXIT
-trap 'exit 130' INT TERM
+stop_load() { if [ -n "$SPID" ] && kill -0 "$SPID" 2>/dev/null; then kill "$SPID" 2>/dev/null; fi; }
+trap stop_load EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 for _ in $(seq $n); do
   sleep 1
   v=$(( $(cat "$H/temp1_input") / 1000 ))
@@ -39,8 +42,8 @@ for _ in $(seq $n); do
   sum=$((sum + v)); fsum=$((fsum + f)); [ $v -gt $max ] && max=$v
   temps="$temps $v"
 done
-e1=$(cat $R)
-wait $SPID 2>/dev/null
-watts="?"; [ "$e1" -ge "$e0" ] && watts=$(( (e1 - e0) / (n * 1000000) ))
+e1=$(cat $R); ts1=$EPOCHREALTIME
+wait "$SPID" 2>/dev/null; SPID=""
+watts=$(awk -v a="$e0" -v b="$e1" -v t0="$ts0" -v t1="$ts1" 'BEGIN { if (b < a || t1 <= t0) print "?"; else printf "%.1f", (b - a) / 1000000 / (t1 - t0) }')
 echo "$LABEL single-core: temps:$temps"
 echo "$LABEL single-core: avg $((sum / n))C max ${max}C avg ${watts}W avg $((fsum / n))MHz throttled $(( $(cat $T) - t0 ))ms"

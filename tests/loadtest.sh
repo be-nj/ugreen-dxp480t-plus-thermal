@@ -10,6 +10,7 @@
 # Usage: loadtest.sh [label] [load_seconds] [cooldown_seconds]
 # Output directory: $LOADTEST_DIR (default /root/loadtests)
 set -u
+export LC_ALL=C   # EPOCHREALTIME and awk must use "." as decimal separator
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -30,7 +31,7 @@ THR=/sys/devices/system/cpu/cpu0/thermal_throttle/package_throttle_total_time_ms
 
 OUT_DIR="${LOADTEST_DIR:-/root/loadtests}"
 OUT="$OUT_DIR/$(date +%Y%m%d-%H%M%S)-$LABEL.csv"
-mkdir -p "$OUT_DIR"
+mkdir -p "$OUT_DIR" || die "cannot create $OUT_DIR"
 
 fans() {
   [ -n "$HW_IT" ] || return 0
@@ -41,23 +42,27 @@ fans() {
 }
 
 echo "t,phase,temp_c,watts,throttle_ms,fans" | tee "$OUT"
-e0=$(cat $RAPL); th0=$(cat $THR)
+e0=$(cat $RAPL); ts0=$EPOCHREALTIME; th0=$(cat $THR)
 stress-ng --cpu 0 --timeout "${LOAD}s" --quiet &
 SPID=$!
-trap 'kill $SPID 2>/dev/null' EXIT
-trap 'exit 130' INT TERM
+# Only kill stress-ng while it is still our running job (avoids hitting a reused PID).
+stop_load() { if [ -n "$SPID" ] && kill -0 "$SPID" 2>/dev/null; then kill "$SPID" 2>/dev/null; fi; }
+trap stop_load EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 for t in $(seq 1 $((LOAD + COOL))); do
   sleep 1
-  e1=$(cat $RAPL); th1=$(cat $THR)
+  e1=$(cat $RAPL); ts1=$EPOCHREALTIME; th1=$(cat $THR)
   phase=load; [ "$t" -gt "$LOAD" ] && phase=cool
-  # The energy counter wraps around; skip the sample instead of printing a negative value.
-  watts=$(awk -v a="$e0" -v b="$e1" 'BEGIN { if (b < a) print ""; else printf "%.1f", (b - a) / 1000000 }')
+  # Divide by the real elapsed time; skip the sample if the energy counter wrapped around.
+  watts=$(awk -v a="$e0" -v b="$e1" -v t0="$ts0" -v t1="$ts1" 'BEGIN { if (b < a || t1 <= t0) print ""; else printf "%.1f", (b - a) / 1000000 / (t1 - t0) }')
   printf "%d,%s,%d,%s,%d,%s\n" "$t" "$phase" $(( $(cat "$HW_CORE/temp1_input") / 1000 )) \
     "$watts" $((th1 - th0)) "$(fans)" | tee -a "$OUT"
-  e0=$e1
+  e0=$e1; ts0=$ts1
+  if [ "$t" -eq "$LOAD" ]; then wait "$SPID" 2>/dev/null; SPID=""; fi
 done
-wait $SPID 2>/dev/null
 echo "saved: $OUT"
 awk -F, 'NR>1 && $2=="load"{n++; s+=$3; if($3>m)m=$3; if($4!=""){w+=$4; wn++}} NR>1{th=$5}
-  END{printf "load: avg %.1fC max %dC avg %.1fW | throttled total %d ms\n", s/n, m, (wn ? w/wn : 0), th}' "$OUT"
+  END{ if (!n) { print "no samples recorded"; exit 1 }
+       printf "load: avg %.1fC max %dC avg %.1fW | throttled total %d ms\n", s/n, m, (wn ? w/wn : 0), th}' "$OUT"
 awk -F, 'NR>1{last=$3} END{print "temp at end of test: " last "C"}' "$OUT"

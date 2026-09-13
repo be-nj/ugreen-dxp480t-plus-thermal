@@ -6,7 +6,9 @@ After=sysinit.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/sbin/cpu-thermal-limits.sh apply
-ExecStop=/usr/local/sbin/cpu-thermal-limits.sh reset
+# ExecStopPost (not ExecStop) also runs when "apply" failed, so a partial apply is
+# rolled back and "systemctl stop" always restores the saved values.
+ExecStopPost=/usr/local/sbin/cpu-thermal-limits.sh reset
 
 # Sandboxing: the script only needs to write to /sys and its state directory.
 StateDirectory=cpu-thermal-limits
