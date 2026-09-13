@@ -5,7 +5,7 @@ Stops the i5-1235U in a **UGREEN NASync DXP480T Plus** from running at 100 °C, 
 > [!CAUTION]
 > **Use at your own risk. No warranty, no liability.** Read every script before you run it: they run as root.
 >
-> **Nutzung auf eigene Gefahr. Keine Gewährleistung, keine Haftung.** Lies jedes Skript, bevor du es ausführst: Sie laufen als root.
+> **Nutzung auf eigene Gefahr. Keine Gewährleistung, keine Haftung.** Lies jedes Skript, bevor du es ausführst: Die Skripte laufen als root.
 
 ## What it does
 
@@ -21,7 +21,7 @@ A systemd service sets two limits at boot and re-applies them every 15 min:
 
 The cost is CPU performance. For a NAS that mostly serves and moves files, this has not been noticeable.
 
-The fans are not changed. More fan speed does not help here: even at 100 % fan speed the CPU hit 100 °C.
+The fans are not changed. More fan speed helps only a little: even at 100 % fan speed the CPU hit 100 °C.
 
 ## Results
 
@@ -30,8 +30,8 @@ Same unit, 20 s of load, BIOS fan control.
 | | Before | 15 W + 3000 MHz |
 |---|---|---|
 | All cores: avg / max | 97.5 °C / 100 °C | **77 °C / 80 °C** |
-| One core: avg / max ¹ | 89 °C / 95 °C | **73 °C / 84 °C** |
-| Throttled during test | 11.5 s of 20 s | **0 s** |
+| One core: avg / max ¹ | 89 °C / 95 °C | **70-73 °C / 76-84 °C** |
+| Throttled (all cores) | 11.5 s of 20 s | **0 s** |
 
 ¹ "Before" measured at 4400 MHz with the 15 W limit already active. A single core draws only about 12 W, so the power limit does not affect this test.
 
@@ -69,6 +69,8 @@ Same unit, 20 s of load, BIOS fan control.
 
 **No extra driver or DKMS needed.** Everything uses standard kernel interfaces.
 
+Other CPUs or models: 15 W / 3000 MHz were tuned on this unit only. Measure with the tests and adjust the config.
+
 ## Install
 
 Commands use `sudo`. On Proxmox you are usually root already: leave out `sudo`.
@@ -78,7 +80,7 @@ Commands use `sudo`. On Proxmox you are usually root already: leave out `sudo`.
 ```sh
 git clone https://github.com/be-nj/ugreen-dxp480t-plus-thermal.git
 cd ugreen-dxp480t-plus-thermal
-less sbin/cpu-thermal-limits.sh default/cpu-thermal-limits systemd/*
+less sbin/* default/* systemd/* tests/*    # :n = next file, q = quit
 ```
 
 **2. Install**
@@ -96,17 +98,19 @@ sudo systemctl enable --now cpu-thermal-limits.service cpu-thermal-limits.timer
 
 ```sh
 sudo /usr/local/sbin/cpu-thermal-limits.sh status
+systemctl status cpu-thermal-limits.service cpu-thermal-limits.timer
+journalctl -b -u cpu-thermal-limits.service -u cpu-thermal-limits-reapply.service   # errors
 ```
 
-On every boot the service first saves the current firmware values to `/run/cpu-thermal-limits`, then applies the limits. `reset` restores the saved values.
+On every boot, before the first change, the service saves the current values to `/run/cpu-thermal-limits`. Stopping the service restores them.
 
 ## Configure
 
 Edit `/etc/default/cpu-thermal-limits`:
 
 ```sh
-POWER_LIMIT_W=15     # 5-65, empty = leave unchanged
-MAX_FREQ_MHZ=3000    # 800-6000, empty = leave unchanged
+POWER_LIMIT_W=15     # 5-65, empty = don't set (missing line = default 15)
+MAX_FREQ_MHZ=3000    # 800-6000, empty = don't set (missing line = default 3000)
 ```
 
 Then check and apply it:
@@ -116,15 +120,18 @@ sudo /usr/local/sbin/cpu-thermal-limits.sh check
 sudo systemctl reload cpu-thermal-limits.service
 ```
 
-Use `reload`, not `restart`. A reload with an invalid config fails and keeps the current limits. A restart resets to the firmware values first.
+Use `reload` to change values: with an invalid config it fails and keeps the current limits. Use `restart` only to remove a limit (set it empty) or if the service is not active: it restores the saved values first, and with an invalid config they stay that way.
 
-For safety the file is parsed, never executed. It must be owned by root and not writable by anyone else. The systemd units also restrict the script: no network, no capabilities, and a read-only system except the power limit and cpufreq settings in `/sys`.
+For safety the file is parsed, never executed. It must be owned by root and not writable by anyone else. When run by systemd, the script is restricted: no network, no capabilities, and a read-only system except the power limit and cpufreq settings in `/sys` and its state in `/run/cpu-thermal-limits`.
 
 ## Update
 
-Read the changes first (`git pull`, then `git log -p`). Then install the script and units again, without the config line, so your settings are kept:
+Read the changes before pulling, then install the script and units again. The config is not reinstalled, so your settings are kept:
 
 ```sh
+git fetch
+git log -p HEAD..@{u}
+git pull
 sudo install -o root -g root -m 755 sbin/cpu-thermal-limits.sh /usr/local/sbin/
 sudo install -o root -g root -m 644 systemd/cpu-thermal-limits.service systemd/cpu-thermal-limits.timer \
         systemd/cpu-thermal-limits-reapply.service /etc/systemd/system/
@@ -136,21 +143,24 @@ sudo systemctl restart cpu-thermal-limits.service cpu-thermal-limits.timer
 
 ```sh
 sudo systemctl disable --now cpu-thermal-limits.timer cpu-thermal-limits.service
-sudo rm /usr/local/sbin/cpu-thermal-limits.sh /etc/default/cpu-thermal-limits \
+sudo rm -f /usr/local/sbin/cpu-thermal-limits.sh /etc/default/cpu-thermal-limits \
         /etc/systemd/system/cpu-thermal-limits.service /etc/systemd/system/cpu-thermal-limits.timer \
         /etc/systemd/system/cpu-thermal-limits-reapply.service
 sudo rm -rf /run/cpu-thermal-limits
 sudo systemctl daemon-reload
+sudo systemctl reset-failed cpu-thermal-limits.service cpu-thermal-limits-reapply.service 2>/dev/null || true
 ```
 
-Stopping the service restores the firmware values right away. During shutdown the limits are kept on purpose, so running VMs can shut down without overheating. Nothing is written to firmware: a boot without the service always starts with the firmware values.
+Stopping the service restores the firmware values right away. To turn it back on: `sudo systemctl start cpu-thermal-limits.service`. During shutdown the limits are kept on purpose, so running VMs can shut down without overheating. Nothing is written to firmware: a boot without the service always starts with the firmware values.
 
 ## Test on your own unit
 
 ```sh
-sudo tests/loadtest.sh before 20 40       # all cores: 20 s load, 40 s cooldown, CSV in /root/loadtests
-sudo tests/singlecore-test.sh before 0    # one core (cpu0) for 20 s
+sudo tests/loadtest.sh mylabel 20 40      # all cores: label, load s, cooldown s; CSV in /root/loadtests
+sudo tests/singlecore-test.sh mylabel 0   # one core: label, CPU number (use a P-core); 20 s, prints only
 ```
+
+To measure without limits, stop the service first and start it again afterwards.
 
 > [!WARNING]
 > The tests heat the CPU on purpose. With the firmware defaults it reaches 100 °C. Keep the tests short, and stop them with `Ctrl+C`. VMs on the host slow down during a test.

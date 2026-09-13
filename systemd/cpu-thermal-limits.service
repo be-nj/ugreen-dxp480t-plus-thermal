@@ -1,6 +1,9 @@
 [Unit]
 Description=Apply CPU power and frequency limits (thermal fix)
 After=sysinit.target
+# Starting the service also starts the re-apply timer (the timer is PartOf= this
+# service, so it stops with it).
+Wants=cpu-thermal-limits.timer
 # Retry a failed start (e.g. a driver that appeared late), but not forever.
 StartLimitIntervalSec=15min
 StartLimitBurst=5
