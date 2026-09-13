@@ -1,12 +1,10 @@
 [Unit]
 Description=Re-apply CPU power and frequency limits periodically (firmware may reset them)
-# Stopped and restarted together with the main service.
+# Started by cpu-thermal-limits.service (Wants=) and stopped together with it,
+# so it needs no [Install] section of its own.
 PartOf=cpu-thermal-limits.service
 
 [Timer]
 OnBootSec=5min
 OnUnitActiveSec=15min
 Unit=cpu-thermal-limits-reapply.service
-
-[Install]
-WantedBy=timers.target

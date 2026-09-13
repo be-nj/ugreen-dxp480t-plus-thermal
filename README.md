@@ -91,7 +91,7 @@ sudo install -o root -g root -m 644 default/cpu-thermal-limits /etc/default/
 sudo install -o root -g root -m 644 systemd/cpu-thermal-limits.service systemd/cpu-thermal-limits.timer \
         systemd/cpu-thermal-limits-reapply.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now cpu-thermal-limits.service cpu-thermal-limits.timer
+sudo systemctl enable --now cpu-thermal-limits.service    # also starts the 15-min timer
 ```
 
 **3. Check**
@@ -126,7 +126,7 @@ For safety the file is parsed, never executed. It must be owned by root and not 
 
 ## Update
 
-Read the changes before pulling, then install the script and units again. The config is not reinstalled, so your settings are kept:
+Read the changes before pulling, then install the script and units again. The config is not reinstalled, so your settings are kept. `reload` checks the config with the new script and keeps the current limits if it fails:
 
 ```sh
 git fetch
@@ -136,13 +136,14 @@ sudo install -o root -g root -m 755 sbin/cpu-thermal-limits.sh /usr/local/sbin/
 sudo install -o root -g root -m 644 systemd/cpu-thermal-limits.service systemd/cpu-thermal-limits.timer \
         systemd/cpu-thermal-limits-reapply.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl restart cpu-thermal-limits.service cpu-thermal-limits.timer
+sudo /usr/local/sbin/cpu-thermal-limits.sh check
+sudo systemctl reload cpu-thermal-limits.service
 ```
 
 ## Undo
 
 ```sh
-sudo systemctl disable --now cpu-thermal-limits.timer cpu-thermal-limits.service
+sudo systemctl disable --now cpu-thermal-limits.service    # also stops the timer
 sudo rm -f /usr/local/sbin/cpu-thermal-limits.sh /etc/default/cpu-thermal-limits \
         /etc/systemd/system/cpu-thermal-limits.service /etc/systemd/system/cpu-thermal-limits.timer \
         /etc/systemd/system/cpu-thermal-limits-reapply.service
@@ -151,16 +152,16 @@ sudo systemctl daemon-reload
 sudo systemctl reset-failed cpu-thermal-limits.service cpu-thermal-limits-reapply.service 2>/dev/null || true
 ```
 
-Stopping the service restores the firmware values right away. To turn it back on: `sudo systemctl start cpu-thermal-limits.service`. During shutdown the limits are kept on purpose, so running VMs can shut down without overheating. Nothing is written to firmware: a boot without the service always starts with the firmware values.
+Stopping the service restores the firmware values right away. To turn it back on: `sudo systemctl start cpu-thermal-limits.service`. During shutdown the limits are kept on purpose, so running VMs can shut down without overheating. Nothing is written to firmware: a normal reboot or power-on without the service starts with the firmware values.
 
 ## Test on your own unit
 
 ```sh
-sudo tests/loadtest.sh mylabel 20 40      # all cores: label, load s, cooldown s; CSV in /root/loadtests
+sudo tests/loadtest.sh mylabel 20 40      # all cores: label, load s, cooldown s; CSV in tests/runs/loadtest
 sudo tests/singlecore-test.sh mylabel 0   # one core: label, CPU number (use a P-core); 20 s, prints only
 ```
 
-To measure without limits, stop the service first and start it again afterwards.
+To measure without limits, stop the service first and start it again afterwards. After more than 5 starts in 15 min systemd refuses: `sudo systemctl reset-failed cpu-thermal-limits.service`.
 
 > [!WARNING]
 > The tests heat the CPU on purpose. With the firmware defaults it reaches 100 °C. Keep the tests short, and stop them with `Ctrl+C`. VMs on the host slow down during a test.

@@ -8,7 +8,7 @@
 #
 # Requires: root (RAPL energy counters are root-only), stress-ng
 # Usage: loadtest.sh [label] [load_seconds] [cooldown_seconds]
-# Output: /root/loadtests/<timestamp>-<label>.<random>.csv
+# Output: tests/runs/loadtest/<timestamp>-<label>.<random>.csv (next to this script)
 set -u
 export LC_ALL=C   # EPOCHREALTIME and awk must use "." as decimal separator
 
@@ -29,10 +29,10 @@ THR=/sys/devices/system/cpu/cpu0/thermal_throttle/package_throttle_total_time_ms
 [ -r "$RAPL" ] || die "$RAPL not readable"
 [ -r "$THR" ] || die "$THR not readable"
 
-# Fixed, root-only output directory. The CSV is created exclusively with mktemp
-# and written through one file descriptor, so nobody can redirect root's writes
+# Root-only output directory. The CSV is created exclusively with mktemp and
+# written through one file descriptor, so nobody can redirect root's writes
 # with a symlink.
-OUT_DIR=/root/loadtests
+OUT_DIR="$(cd "$(dirname "$0")" && pwd -P)/runs/loadtest"
 mkdir -p "$OUT_DIR" || die "cannot create $OUT_DIR"
 [ ! -L "$OUT_DIR" ] && [ "$(stat -c %u "$OUT_DIR")" = 0 ] && [ $(( 8#$(stat -c %a "$OUT_DIR") & 8#022 )) = 0 ] \
   || die "$OUT_DIR must be a root-owned directory not writable by group or others"

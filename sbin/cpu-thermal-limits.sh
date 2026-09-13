@@ -11,21 +11,19 @@
 #   MAX_FREQ_MHZ=3000    max frequency per core in MHz, empty = leave untouched
 #
 # Usage:
-#   cpu-thermal-limits.sh apply       apply configured limits (default)
-#   cpu-thermal-limits.sh reapply     apply only while cpu-thermal-limits.service is active (used by the timer)
+#   cpu-thermal-limits.sh apply       apply configured limits (default); only changed values are written and logged
 #   cpu-thermal-limits.sh reset       restore the values saved before the first apply in this boot
 #   cpu-thermal-limits.sh check       validate the config without changing anything
-#   cpu-thermal-limits.sh wait-rapl   wait up to 60 s for the RAPL interface (used by ExecStartPre)
+#   cpu-thermal-limits.sh wait-rapl   wait up to 60 s for the RAPL interface if a power limit is configured (ExecStartPre)
 #   cpu-thermal-limits.sh status      show current limits
 
 set -eu
 
 CONFIG=/etc/default/cpu-thermal-limits
-# Original values are kept in /run, so every boot records the firmware values
-# afresh (a BIOS update may change them).
+# Original values are kept in /run, so every normal boot records the firmware
+# values afresh (a BIOS update may change them).
 RUN_DIR=/run/cpu-thermal-limits
 STATE_DIR=$RUN_DIR/saved
-MAIN_UNIT=cpu-thermal-limits.service
 RAPL_MSR=/sys/class/powercap/intel-rapl:0
 RAPL_MMIO=/sys/class/powercap/intel-rapl-mmio:0
 
@@ -103,12 +101,11 @@ check_int() {
 # ---------------------------------------------------------------------------
 
 # save_once NAME SOURCE_FILE: store the integer in SOURCE_FILE as $STATE_DIR/NAME,
-# unless a valid saved value already exists. Written atomically.
+# unless something was saved already (never overwrite an original with a value
+# that may already be capped). Written atomically.
 save_once() {
     local dst="$STATE_DIR/$1" v
-    if [ -f "$dst" ] && is_uint "$(cat "$dst" 2>/dev/null)"; then
-        return 0
-    fi
+    [ -e "$dst" ] && return 0
     v=$(read_uint "$2") || { warn "cannot read $2"; return 1; }
     { mkdir -p "$STATE_DIR" && chmod 0700 "$STATE_DIR"; } || return 1
     printf '%s\n' "$v" > "$dst.tmp" && mv -f "$dst.tmp" "$dst" || { warn "cannot write $dst"; return 1; }
@@ -171,42 +168,52 @@ wait_for_rapl() {
     return 0
 }
 
+# set_value FILE VALUE: write only if different. Sets CHANGED=1 when a write
+# happened; returns 1 if the file does not hold VALUE afterwards.
+CHANGED=0
+set_value() {
+    local cur
+    cur=$(cat "$1" 2>/dev/null) || cur=""
+    [ "$cur" = "$2" ] && return 0
+    write_value "$2" "$1"
+    CHANGED=1
+    [ "$(cat "$1" 2>/dev/null)" = "$2" ]
+}
+
+# Fails only if no RAPL interface holds the limit afterwards (the lower of the
+# two interfaces wins, so one is enough).
 apply_power_limit() {
     [ -n "$POWER_LIMIT_W" ] || return 0
     local uw=$(( POWER_LIMIT_W * 1000000 )) d c ok=0
-    [ -d "$RAPL_MSR" ] || wait_for_rapl || { warn "RAPL interface $RAPL_MSR not available"; return 1; }
+    [ -d "$RAPL_MSR" ] || { warn "RAPL interface $RAPL_MSR not available"; return 1; }
     for d in $(rapl_domains); do
         for c in 0 1; do
             save_once "$(basename "$d")-c$c" "$d/constraint_${c}_power_limit_uw" \
                 || { warn "not changing $d: original value could not be saved"; continue 2; }
         done
-        write_value "$uw" "$d/constraint_0_power_limit_uw"
-        write_value "$uw" "$d/constraint_1_power_limit_uw"
-        if [ "$(cat "$d/constraint_0_power_limit_uw")" = "$uw" ] && [ "$(cat "$d/constraint_1_power_limit_uw")" = "$uw" ]; then
+        if set_value "$d/constraint_0_power_limit_uw" "$uw" && set_value "$d/constraint_1_power_limit_uw" "$uw"; then
             ok=1
         else
             warn "$d did not accept ${POWER_LIMIT_W} W"
         fi
     done
     [ "$ok" = 1 ] || { warn "power limit not applied"; return 1; }
-    log "power limit: ${POWER_LIMIT_W} W"
 }
 
+# A core that refuses the value is only a warning, so a problem with the
+# frequency cap never rolls back the (more important) power limit. Fails only
+# if no core holds the cap.
 apply_max_freq() {
     [ -n "$MAX_FREQ_MHZ" ] || return 0
-    local khz=$(( MAX_FREQ_MHZ * 1000 )) c hw v bad=0 found=0
+    local khz=$(( MAX_FREQ_MHZ * 1000 )) c hw v ok=0
     for c in $(cpufreq_dirs); do
-        found=1
-        save_once "$(basename "$(dirname "$c")")-max_freq" "$c/scaling_max_freq" || { bad=1; continue; }
-        hw=$(read_uint "$c/cpuinfo_max_freq") || { bad=1; continue; }
+        save_once "$(basename "$(dirname "$c")")-max_freq" "$c/scaling_max_freq" || continue
+        hw=$(read_uint "$c/cpuinfo_max_freq") || { warn "cannot read $c/cpuinfo_max_freq"; continue; }
         v=$khz
         if [ "$v" -gt "$hw" ]; then v=$hw; fi
-        write_value "$v" "$c/scaling_max_freq"
-        [ "$(cat "$c/scaling_max_freq" 2>/dev/null)" = "$v" ] || { warn "$c did not accept $v kHz"; bad=1; }
+        if set_value "$c/scaling_max_freq" "$v"; then ok=1; else warn "$c did not accept $v kHz"; fi
     done
-    [ "$found" = 1 ] || { warn "no cpufreq interface found"; return 1; }
-    [ "$bad" = 0 ] || { warn "max frequency not applied on all cores"; return 1; }
-    log "max frequency: ${MAX_FREQ_MHZ} MHz"
+    [ "$ok" = 1 ] || { warn "max frequency not applied on any core"; return 1; }
 }
 
 reset_limits() {
@@ -247,8 +254,7 @@ show_status() {
     done | sort -V
 }
 
-# Serialize apply and reset, so a timer-triggered apply cannot overwrite a
-# concurrent reset from "systemctl stop".
+# Serialize apply and reset (e.g. a manual run and the service).
 take_lock() {
     mkdir -p "$RUN_DIR" || die "cannot create $RUN_DIR"
     exec 9>"$RUN_DIR/lock" || die "cannot open $RUN_DIR/lock"
@@ -267,6 +273,12 @@ do_apply() {
     local rc=0
     apply_power_limit || rc=1
     apply_max_freq || rc=1
+    # Log only real changes, so the 15-minute re-apply shows when firmware reset a value.
+    if [ "$CHANGED" = 1 ]; then
+        log "applied: POWER_LIMIT_W=${POWER_LIMIT_W:-unchanged} MAX_FREQ_MHZ=${MAX_FREQ_MHZ:-unchanged}"
+    elif [ -t 1 ]; then
+        log "limits already in place"
+    fi
     return "$rc"
 }
 
@@ -277,19 +289,9 @@ case "${1:-apply}" in
         take_lock
         do_apply
         ;;
-    reapply)
-        take_lock
-        # Checked under the lock: while the main unit is stopping it is no longer
-        # "active", so a stop that is in progress wins over the timer.
-        if ! systemctl is-active --quiet "$MAIN_UNIT"; then
-            log "$MAIN_UNIT is not active, not re-applying"
-            exit 0
-        fi
-        do_apply
-        ;;
     reset)
         # During shutdown or reboot keep the limits: the guests are still shutting
-        # down, and the next boot starts from the firmware values anyway.
+        # down, and a normal boot starts from the firmware values anyway.
         if [ "$(systemctl is-system-running 2>/dev/null)" = stopping ]; then
             log "system is shutting down, keeping limits"
             exit 0
@@ -302,8 +304,9 @@ case "${1:-apply}" in
         log "config OK: POWER_LIMIT_W=${POWER_LIMIT_W:-unchanged} MAX_FREQ_MHZ=${MAX_FREQ_MHZ:-unchanged}"
         ;;
     wait-rapl)
-        wait_for_rapl || die "RAPL interface $RAPL_MSR not available"
+        load_config
+        [ -z "$POWER_LIMIT_W" ] || wait_for_rapl || die "RAPL interface $RAPL_MSR not available"
         ;;
     status) show_status ;;
-    *)      echo "usage: $0 [apply|reapply|reset|check|wait-rapl|status]" >&2; exit 2 ;;
+    *)      echo "usage: $0 [apply|reset|check|wait-rapl|status]" >&2; exit 2 ;;
 esac

@@ -1,36 +1,25 @@
 [Unit]
 Description=Re-apply CPU power and frequency limits
-# The script itself skips re-applying unless cpu-thermal-limits.service is active
-# (checked under a lock), so "systemctl stop" is never undone by the timer.
-After=cpu-thermal-limits.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/cpu-thermal-limits.sh reapply
+# Runs the main service's ExecReload, and does nothing if it is not active.
+# systemd orders this against a concurrent stop of the main service.
+ExecStart=/usr/bin/systemctl try-reload-or-restart cpu-thermal-limits.service
 
-# Sandboxing: /sys and /proc/sys are read-only except the power limit and cpufreq
-# directories; writable state only in /run/cpu-thermal-limits.
-RuntimeDirectory=cpu-thermal-limits
-RuntimeDirectoryPreserve=yes
+# Sandboxing: only needs to talk to systemd over its local socket.
 ProtectSystem=strict
-# Not ProtectKernelTunables=yes: on systemd 257 it leaves /sys writable as soon as
-# ReadWritePaths= opens subdirectories of /sys. Explicit read-only paths do work.
-ReadOnlyPaths=/sys
-ReadOnlyPaths=/proc/sys
-ReadOnlyPaths=/proc/sysrq-trigger
-ReadWritePaths=-/sys/devices/virtual/powercap/intel-rapl
-ReadWritePaths=-/sys/devices/virtual/powercap/intel-rapl-mmio
-ReadWritePaths=/sys/devices/system/cpu/cpufreq
 ProtectHome=yes
 PrivateTmp=yes
 PrivateNetwork=yes
+PrivateDevices=yes
 NoNewPrivileges=yes
 RestrictAddressFamilies=AF_UNIX
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RestrictRealtime=yes
 RestrictNamespaces=yes
-PrivateDevices=yes
+ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
