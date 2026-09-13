@@ -122,6 +122,8 @@ sudo systemctl reload cpu-thermal-limits.service
 
 Use `reload` to change values: with an invalid config it fails and keeps the current limits. Use `restart` only to remove a limit (set it empty) or if the service is not active: it restores the saved values first, and with an invalid config they stay that way.
 
+If you switch the `intel_pstate` mode (`/sys/devices/system/cpu/intel_pstate/status`), the kernel drops the frequency cap. The timer sets it again within 15 min, or run `reload` right away.
+
 For safety the file is parsed, never executed. It must be owned by root and not writable by anyone else. When run by systemd, the script is restricted: no network, no capabilities, and a read-only system except the power limit and cpufreq settings in `/sys` and its state in `/run/cpu-thermal-limits`.
 
 ## Update
