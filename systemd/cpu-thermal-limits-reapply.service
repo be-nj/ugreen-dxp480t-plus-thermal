@@ -1,0 +1,7 @@
+[Unit]
+Description=Re-apply CPU power and frequency limits
+After=cpu-thermal-limits.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cpu-thermal-limits.sh apply

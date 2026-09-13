@@ -1,0 +1,12 @@
+[Unit]
+Description=Apply CPU power and frequency limits (thermal fix)
+After=sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/cpu-thermal-limits.sh apply
+ExecStop=/usr/local/sbin/cpu-thermal-limits.sh reset
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,5 @@
+# /etc/default/cpu-thermal-limits
+# Package power limit in watts, applied to PL1 and PL2. Empty = leave firmware value.
+POWER_LIMIT_W=15
+# Maximum frequency per core in MHz (capped at each core's hardware maximum). Empty = leave untouched.
+MAX_FREQ_MHZ=3000
