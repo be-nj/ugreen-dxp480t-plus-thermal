@@ -8,7 +8,7 @@
 #
 # Requires: root (RAPL energy counters are root-only), stress-ng
 # Usage: loadtest.sh [label] [load_seconds] [cooldown_seconds]
-# Output directory: $LOADTEST_DIR (default /root/loadtests)
+# Output: /root/loadtests/<timestamp>-<label>.<random>.csv
 set -u
 export LC_ALL=C   # EPOCHREALTIME and awk must use "." as decimal separator
 
@@ -29,9 +29,15 @@ THR=/sys/devices/system/cpu/cpu0/thermal_throttle/package_throttle_total_time_ms
 [ -r "$RAPL" ] || die "$RAPL not readable"
 [ -r "$THR" ] || die "$THR not readable"
 
-OUT_DIR="${LOADTEST_DIR:-/root/loadtests}"
-OUT="$OUT_DIR/$(date +%Y%m%d-%H%M%S)-$LABEL.csv"
+# Fixed, root-only output directory. The CSV is created exclusively with mktemp
+# and written through one file descriptor, so nobody can redirect root's writes
+# with a symlink.
+OUT_DIR=/root/loadtests
 mkdir -p "$OUT_DIR" || die "cannot create $OUT_DIR"
+[ ! -L "$OUT_DIR" ] && [ "$(stat -c %u "$OUT_DIR")" = 0 ] && [ $(( 8#$(stat -c %a "$OUT_DIR") & 8#022 )) = 0 ] \
+  || die "$OUT_DIR must be a root-owned directory not writable by group or others"
+OUT=$(mktemp "$OUT_DIR/$(date +%Y%m%d-%H%M%S)-$LABEL.XXXXXX.csv") || die "cannot create output file"
+exec 3>"$OUT"
 
 fans() {
   [ -n "$HW_IT" ] || return 0
@@ -41,7 +47,7 @@ fans() {
   echo "$s"
 }
 
-echo "t,phase,temp_c,watts,throttle_ms,fans" | tee "$OUT"
+echo "t,phase,temp_c,watts,throttle_ms,fans" | tee -a /dev/fd/3
 e0=$(cat $RAPL); ts0=$EPOCHREALTIME; th0=$(cat $THR)
 stress-ng --cpu 0 --timeout "${LOAD}s" --quiet &
 SPID=$!
@@ -57,10 +63,11 @@ for t in $(seq 1 $((LOAD + COOL))); do
   # Divide by the real elapsed time; skip the sample if the energy counter wrapped around.
   watts=$(awk -v a="$e0" -v b="$e1" -v t0="$ts0" -v t1="$ts1" 'BEGIN { if (b < a || t1 <= t0) print ""; else printf "%.1f", (b - a) / 1000000 / (t1 - t0) }')
   printf "%d,%s,%d,%s,%d,%s\n" "$t" "$phase" $(( $(cat "$HW_CORE/temp1_input") / 1000 )) \
-    "$watts" $((th1 - th0)) "$(fans)" | tee -a "$OUT"
+    "$watts" $((th1 - th0)) "$(fans)" | tee -a /dev/fd/3
   e0=$e1; ts0=$ts1
   if [ "$t" -eq "$LOAD" ]; then wait "$SPID" 2>/dev/null; SPID=""; fi
 done
+exec 3>&-
 echo "saved: $OUT"
 awk -F, 'NR>1 && $2=="load"{n++; s+=$3; if($3>m)m=$3; if($4!=""){w+=$4; wn++}} NR>1{th=$5}
   END{ if (!n) { print "no samples recorded"; exit 1 }

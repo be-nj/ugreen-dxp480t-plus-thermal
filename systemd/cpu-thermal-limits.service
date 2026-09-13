@@ -10,9 +10,20 @@ ExecStart=/usr/local/sbin/cpu-thermal-limits.sh apply
 # rolled back and "systemctl stop" always restores the saved values.
 ExecStopPost=/usr/local/sbin/cpu-thermal-limits.sh reset
 
-# Sandboxing: the script only needs to write to /sys and its state directory.
+# Sandboxing: /sys and /proc/sys are read-only except the power limit and cpufreq
+# directories; writable state only in /var/lib and /run/cpu-thermal-limits.
 StateDirectory=cpu-thermal-limits
+RuntimeDirectory=cpu-thermal-limits
+RuntimeDirectoryPreserve=yes
 ProtectSystem=strict
+# Not ProtectKernelTunables=yes: on systemd 257 it leaves /sys writable as soon as
+# ReadWritePaths= opens subdirectories of /sys. Explicit read-only paths do work.
+ReadOnlyPaths=/sys
+ReadOnlyPaths=/proc/sys
+ReadOnlyPaths=/proc/sysrq-trigger
+ReadWritePaths=-/sys/devices/virtual/powercap/intel-rapl
+ReadWritePaths=-/sys/devices/virtual/powercap/intel-rapl-mmio
+ReadWritePaths=/sys/devices/system/cpu/cpufreq
 ProtectHome=yes
 PrivateTmp=yes
 PrivateNetwork=yes

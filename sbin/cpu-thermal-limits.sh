@@ -12,6 +12,7 @@
 #
 # Usage:
 #   cpu-thermal-limits.sh apply     apply configured limits (default)
+#   cpu-thermal-limits.sh reapply   apply only while cpu-thermal-limits.service is active (used by the timer)
 #   cpu-thermal-limits.sh reset     restore the values saved before the first apply
 #   cpu-thermal-limits.sh status    show current limits
 
@@ -19,6 +20,8 @@ set -eu
 
 CONFIG=/etc/default/cpu-thermal-limits
 STATE_DIR=/var/lib/cpu-thermal-limits
+RUN_DIR=/run/cpu-thermal-limits
+MAIN_UNIT=cpu-thermal-limits.service
 RAPL_MSR=/sys/class/powercap/intel-rapl:0
 RAPL_MMIO=/sys/class/powercap/intel-rapl-mmio:0
 
@@ -223,20 +226,46 @@ show_status() {
     done | sort -V
 }
 
+# Serialize apply and reset, so a timer-triggered apply cannot overwrite a
+# concurrent reset from "systemctl stop".
+take_lock() {
+    mkdir -p "$RUN_DIR" || die "cannot create $RUN_DIR"
+    exec 9>"$RUN_DIR/lock" || die "cannot open $RUN_DIR/lock"
+    flock -w 120 9 || die "timed out waiting for $RUN_DIR/lock"
+}
+
+do_apply() {
+    read_config
+    check_int POWER_LIMIT_W "$POWER_LIMIT_W" "$POWER_MIN_W" "$POWER_MAX_W"
+    check_int MAX_FREQ_MHZ "$MAX_FREQ_MHZ" "$FREQ_MIN_MHZ" "$FREQ_MAX_MHZ"
+    # Try both limits even if one fails, then report failure.
+    local rc=0
+    apply_power_limit || rc=1
+    apply_max_freq || rc=1
+    return "$rc"
+}
+
 [ "$(id -u)" = 0 ] || die "must run as root"
 
 case "${1:-apply}" in
     apply)
-        read_config
-        check_int POWER_LIMIT_W "$POWER_LIMIT_W" "$POWER_MIN_W" "$POWER_MAX_W"
-        check_int MAX_FREQ_MHZ "$MAX_FREQ_MHZ" "$FREQ_MIN_MHZ" "$FREQ_MAX_MHZ"
-        # Try both limits even if one fails, then report failure.
-        rc=0
-        apply_power_limit || rc=1
-        apply_max_freq || rc=1
-        exit "$rc"
+        take_lock
+        do_apply
         ;;
-    reset)  reset_limits ;;
+    reapply)
+        take_lock
+        # Checked under the lock: while the main unit is stopping it is no longer
+        # "active", so a stop that is in progress wins over the timer.
+        if ! systemctl is-active --quiet "$MAIN_UNIT"; then
+            log "$MAIN_UNIT is not active, not re-applying"
+            exit 0
+        fi
+        do_apply
+        ;;
+    reset)
+        take_lock
+        reset_limits
+        ;;
     status) show_status ;;
-    *)      echo "usage: $0 [apply|reset|status]" >&2; exit 2 ;;
+    *)      echo "usage: $0 [apply|reapply|reset|status]" >&2; exit 2 ;;
 esac
