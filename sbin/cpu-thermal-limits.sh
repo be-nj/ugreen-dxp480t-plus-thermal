@@ -6,7 +6,7 @@
 # Proxmox VE, where the firmware defaults (25 W / 55 W, 4.4 GHz) push the CPU
 # to 100 C and into constant thermal throttling.
 #
-# Settings are read from /etc/default/cpu-thermal-limits:
+# Settings are parsed (not sourced) from /etc/default/cpu-thermal-limits:
 #   POWER_LIMIT_W=15     package power limit in watts (PL1 and PL2), empty = leave untouched
 #   MAX_FREQ_MHZ=3000    max frequency per core in MHz, empty = leave untouched
 #
@@ -23,10 +23,50 @@ RAPL_DOMAINS="/sys/class/powercap/intel-rapl:0 /sys/class/powercap/intel-rapl-mm
 
 POWER_LIMIT_W=15
 MAX_FREQ_MHZ=3000
-# shellcheck source=/dev/null
-[ -f "$CONFIG" ] && . "$CONFIG"
+
+# Sanity bounds: refuse values that would make the machine unusable.
+POWER_MIN_W=5;    POWER_MAX_W=65
+FREQ_MIN_MHZ=800; FREQ_MAX_MHZ=6000
 
 log() { echo "$*"; }
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+# Read the config without sourcing it: only the two known keys are accepted,
+# so the file cannot execute code as root.
+read_config() {
+    [ -f "$CONFIG" ] || return 0
+    local owner mode key value
+    owner=$(stat -c %u "$CONFIG"); mode=$(stat -c %a "$CONFIG")
+    [ "$owner" = 0 ] || die "$CONFIG must be owned by root"
+    [ $(( 8#$mode & 8#022 )) = 0 ] || die "$CONFIG must not be writable by group or others"
+    while IFS='=' read -r key value; do
+        key="${key//[[:space:]]/}"
+        value="${value%%#*}"; value="${value//[[:space:]]/}"; value="${value//\"/}"
+        case "$key" in
+            ''|\#*) ;;
+            POWER_LIMIT_W) POWER_LIMIT_W="$value" ;;
+            MAX_FREQ_MHZ)  MAX_FREQ_MHZ="$value" ;;
+            *) log "WARN: ignoring unknown key '$key' in $CONFIG" ;;
+        esac
+    done < "$CONFIG"
+}
+
+validate() {
+    if [ -n "$POWER_LIMIT_W" ]; then
+        [[ "$POWER_LIMIT_W" =~ ^[0-9]+$ ]] || die "POWER_LIMIT_W must be an integer, got '$POWER_LIMIT_W'"
+        [ "$POWER_LIMIT_W" -ge "$POWER_MIN_W" ] && [ "$POWER_LIMIT_W" -le "$POWER_MAX_W" ] \
+            || die "POWER_LIMIT_W must be between $POWER_MIN_W and $POWER_MAX_W"
+    fi
+    if [ -n "$MAX_FREQ_MHZ" ]; then
+        [[ "$MAX_FREQ_MHZ" =~ ^[0-9]+$ ]] || die "MAX_FREQ_MHZ must be an integer, got '$MAX_FREQ_MHZ'"
+        [ "$MAX_FREQ_MHZ" -ge "$FREQ_MIN_MHZ" ] && [ "$MAX_FREQ_MHZ" -le "$FREQ_MAX_MHZ" ] \
+            || die "MAX_FREQ_MHZ must be between $FREQ_MIN_MHZ and $FREQ_MAX_MHZ"
+    fi
+}
+
+[ "$(id -u)" = 0 ] || die "must run as root"
+read_config
+validate
 
 wait_for_rapl() {
     # RAPL drivers are loaded by udev; wait up to 60 s for at least the MSR interface.

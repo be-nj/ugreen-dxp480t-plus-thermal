@@ -17,6 +17,8 @@ FREQ=/sys/devices/system/cpu/cpu$CPU/cpufreq/scaling_cur_freq
 
 t0=$(cat $T); e0=$(cat $R); sum=0; max=0; fsum=0; temps=""; n=$((SECS - 1))
 stress-ng --cpu 1 --taskset "$CPU" --timeout "${SECS}s" --quiet &
+SPID=$!
+trap 'kill $SPID 2>/dev/null' EXIT INT TERM
 for _ in $(seq $n); do
   sleep 1
   v=$(( $(cat "$H/temp1_input") / 1000 ))

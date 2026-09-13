@@ -69,47 +69,76 @@ tests/loadtest.sh                          full-load test with per-second CSV
 tests/singlecore-test.sh                   single-core burst test
 ```
 
-## Installation
+## Before you install
 
-Read the scripts first (see the warning above). Then, as root:
+- **Check your hardware.** The values were measured on a DXP480T Plus with an i5-1235U. On other models or CPUs they may be wrong. Check that `/sys/class/powercap/intel-rapl:0` exists and look at your current values first: `cat /sys/class/powercap/intel-rapl:0/constraint_*_power_limit_uw`.
+- **Review what you install.** Clone the repository, look at the exact commit you are about to install and read every file you copy into system directories:
 
 ```sh
-install -m 755 sbin/cpu-thermal-limits.sh /usr/local/sbin/cpu-thermal-limits.sh
-install -m 644 default/cpu-thermal-limits /etc/default/cpu-thermal-limits
-install -m 644 systemd/cpu-thermal-limits.service systemd/cpu-thermal-limits.timer \
+git clone https://github.com/be-nj/ugreen-dxp480t-plus-thermal.git
+cd ugreen-dxp480t-plus-thermal
+git log -1                      # note the commit you reviewed
+less sbin/cpu-thermal-limits.sh default/cpu-thermal-limits systemd/*
+```
+
+Do not pipe anything from the internet straight into a root shell, and do not install a newer commit later without reviewing the changes (`git diff <old>..<new>`).
+
+## Installation
+
+The commands below need root. On a regular Linux system they are shown with `sudo`. On Proxmox VE you are usually logged in as root and `sudo` is not installed: drop the `sudo` prefix there.
+
+```sh
+sudo install -o root -g root -m 755 sbin/cpu-thermal-limits.sh /usr/local/sbin/cpu-thermal-limits.sh
+sudo install -o root -g root -m 644 default/cpu-thermal-limits /etc/default/cpu-thermal-limits
+sudo install -o root -g root -m 644 systemd/cpu-thermal-limits.service systemd/cpu-thermal-limits.timer \
                systemd/cpu-thermal-limits-reapply.service /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now cpu-thermal-limits.service cpu-thermal-limits.timer
-cpu-thermal-limits.sh status
+sudo systemctl daemon-reload
+sudo systemctl enable --now cpu-thermal-limits.service cpu-thermal-limits.timer
+sudo cpu-thermal-limits.sh status
 ```
 
 On the first `apply` the current firmware power limits are saved to `/var/lib/cpu-thermal-limits/`. `reset` (and stopping the service) restores those values and the hardware maximum frequency. So install it while the firmware defaults are still active, not after you have changed the limits some other way.
 
-To change the values, edit `/etc/default/cpu-thermal-limits` and run `systemctl restart cpu-thermal-limits.service`.
+To change the values, edit `/etc/default/cpu-thermal-limits` and run `sudo systemctl restart cpu-thermal-limits.service`.
+
+### How the config file is handled
+
+The script runs as root, so the config file is treated as untrusted input:
+
+- It is **parsed, not sourced**: only `POWER_LIMIT_W` and `MAX_FREQ_MHZ` are read, and nothing in the file is executed.
+- Both values must be integers within sanity bounds: 5-65 W and 800-6000 MHz. Anything else stops the script with an error, and no limits are changed.
+- The file must be owned by root and must not be writable by group or others, otherwise the script refuses to run.
+
+Keep it that way: anyone who can write to the files in `/usr/local/sbin`, `/etc/default` or `/etc/systemd/system` can control what runs as root.
 
 ## Uninstall
 
 ```sh
-systemctl disable --now cpu-thermal-limits.timer cpu-thermal-limits.service   # stop restores defaults
-rm /etc/systemd/system/cpu-thermal-limits.service /etc/systemd/system/cpu-thermal-limits.timer \
-   /etc/systemd/system/cpu-thermal-limits-reapply.service
-rm /usr/local/sbin/cpu-thermal-limits.sh /etc/default/cpu-thermal-limits
-rm -rf /var/lib/cpu-thermal-limits
-systemctl daemon-reload
+sudo systemctl disable --now cpu-thermal-limits.timer cpu-thermal-limits.service   # stop restores defaults
+sudo rm /etc/systemd/system/cpu-thermal-limits.service /etc/systemd/system/cpu-thermal-limits.timer \
+        /etc/systemd/system/cpu-thermal-limits-reapply.service
+sudo rm /usr/local/sbin/cpu-thermal-limits.sh /etc/default/cpu-thermal-limits
+sudo rm -rf /var/lib/cpu-thermal-limits
+sudo systemctl daemon-reload
 ```
 
 Nothing is written to firmware or NVRAM. The limits live only in the running kernel, so a reboot without the service brings back the firmware defaults.
 
 ## Testing
 
-Both test scripts need `stress-ng` (the full-load test also needs `bc`) and must run as root.
+Both test scripts need `stress-ng` (the full-load test also needs `bc`) and must run as root, because they read RAPL energy counters.
 
 ```sh
-tests/loadtest.sh my-label 20 40        # 20 s load, 40 s cooldown, CSV in $LOADTEST_DIR (default /root/loadtests)
-tests/singlecore-test.sh my-label 0     # 20 s load pinned to cpu0
+sudo tests/loadtest.sh my-label 20 40        # 20 s load, 40 s cooldown, CSV in $LOADTEST_DIR (default /root/loadtests)
+sudo tests/singlecore-test.sh my-label 0     # 20 s load pinned to cpu0
 ```
 
 Run them before and after installing to see the effect on your own unit.
+
+> [!WARNING]
+> These tests put the CPU under full load on purpose. With the firmware defaults the i5-1235U reaches **100 °C** within a second and stays there for the whole test. The CPU protects itself by throttling, but do not make the load longer than necessary, do not run the tests on a machine that already shows cooling problems, and watch the output. Stop a test with `Ctrl+C`.
+>
+> Load on the host also slows down the VMs and containers running on it.
 
 ## Notes on fan control
 
