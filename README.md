@@ -36,7 +36,7 @@ The trade-off is CPU performance. For a NAS that mostly moves files around this 
 
 ## Results
 
-All tests on the same unit, 20 s of load, stock BIOS fan control unless noted. Temperatures are the CPU package sensor (`coretemp`), sampled once per second.
+All tests on the same unit, 20 s of load, stock BIOS fan control unless noted. The rows with fixed fan speeds were measured with the temporary `it87` driver (see [Notes on fan control](#notes-on-fan-control)); the final configuration was measured without it. Temperatures are the CPU package sensor (`coretemp`), sampled once per second.
 
 **Full load on all 12 threads** (`tests/loadtest.sh`)
 
@@ -56,6 +56,15 @@ All tests on the same unit, 20 s of load, stock BIOS fan control unless noted. T
 | 3500 MHz | 77 °C | 83 °C | 8 W | 0 |
 | **3000 MHz** | **70-73 °C** | **76-84 °C** | **6 W** | **0** |
 | 2500 MHz | 63 °C | 70 °C | 4 W | 0 |
+
+## Requirements
+
+- Intel CPU with RAPL power limits, exposed by the in-tree kernel drivers `intel_rapl_msr` and `processor_thermal_rapl`. Both are part of the standard kernel and load automatically.
+- cpufreq support, e.g. `intel_pstate` (standard kernel)
+- systemd and bash
+- For the tests only: `stress-ng` and `bc`
+
+**No extra driver is needed.** In particular you do **not** need the out-of-tree `it87` fan driver or DKMS. The driver is mentioned under [Notes on fan control](#notes-on-fan-control) only because it was used for the fan measurements. This fix does not touch the fans at all; they stay under BIOS control.
 
 ## Files
 
@@ -142,7 +151,9 @@ Run them before and after installing to see the effect on your own unit.
 
 ## Notes on fan control
 
-The DXP480T Plus has an ITE IT8613E Super I/O chip at `0xa30` driving three fans. The mainline `it87` driver does not support it; the fork in [IT-Kuny/UGREEN-DXP-FAN-NAS-Driver](https://github.com/IT-Kuny/UGREEN-DXP-FAN-NAS-Driver) does. Findings from testing it, in case you go that route:
+This section is background only. **You do not need any of it for the fix in this repository.**
+
+The DXP480T Plus has an ITE IT8613E Super I/O chip at `0xa30` driving three fans. The mainline `it87` driver does not support it; the third-party fork in [IT-Kuny/UGREEN-DXP-FAN-NAS-Driver](https://github.com/IT-Kuny/UGREEN-DXP-FAN-NAS-Driver) does. It was used here only temporarily, to read fan speeds and force the fans to fixed speeds during the tests, and was removed afterwards. It is an out-of-tree kernel module built with DKMS, not part of this repository and not reviewed or endorsed by it. The same warning applies: read its code before you build or load it. Findings from testing it, in case you go that route:
 
 - Once you switch a fan to manual (`pwmN_enable=1`), writing `2` back does **not** restore the BIOS behaviour. The duty register keeps its value, and with the original value the fans stalled at 0-900 rpm. Only a reboot reliably restores the BIOS fan control.
 - Above roughly 3000 rpm (PWM ~100) more fan speed made no measurable difference to CPU temperature.
